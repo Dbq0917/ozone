@@ -379,6 +379,9 @@ public final class ScmConfigKeys {
   public static final String OZONE_SCM_CONTAINER_PLACEMENT_RACK_SCATTER_CAPACITY_AWARE_ENABLED =
       "ozone.scm.container.placement.rack.scatter.capacity.aware.enabled";
   public static final boolean OZONE_SCM_CONTAINER_PLACEMENT_RACK_SCATTER_CAPACITY_AWARE_ENABLED_DEFAULT = false;
+  public static final String OZONE_SCM_CONTAINER_PLACEMENT_RACK_AWARE_CAPACITY_AWARE_ENABLED =
+      "ozone.scm.container.placement.rack.aware.capacity.aware.enabled";
+  public static final boolean OZONE_SCM_CONTAINER_PLACEMENT_RACK_AWARE_CAPACITY_AWARE_ENABLED_DEFAULT = false;
 
   public static final String OZONE_SCM_PIPELINE_OWNER_CONTAINER_COUNT =
       "ozone.scm.pipeline.owner.container.count";

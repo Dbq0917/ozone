@@ -21,6 +21,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -29,9 +30,12 @@ import java.util.Set;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.scm.SCMCommonPlacementPolicy;
+import org.apache.hadoop.hdds.scm.ScmConfigKeys;
+import org.apache.hadoop.hdds.scm.container.placement.metrics.SCMNodeMetric;
 import org.apache.hadoop.hdds.scm.exceptions.SCMException;
 import org.apache.hadoop.hdds.scm.net.NetConstants;
 import org.apache.hadoop.hdds.scm.net.NetworkTopology;
+import org.apache.hadoop.hdds.scm.net.Node;
 import org.apache.hadoop.hdds.scm.node.NodeManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +62,7 @@ public final class SCMContainerPlacementRackAware
   private static final int RACK_LEVEL = 1;
   private static final int MAX_RETRY = 3;
   private final SCMContainerPlacementMetrics metrics;
+  private final boolean capacityAwareNodeSelectionEnabled;
   // Used to check the placement policy is validated in the parent class
   private static final int REQUIRED_RACKS = 2;
   private static final String META_DATA_SIZE_REQUIRED = "metadataSizeRequired";
@@ -80,6 +85,9 @@ public final class SCMContainerPlacementRackAware
     this.networkTopology = networkTopology;
     this.fallback = fallback;
     this.metrics = metrics;
+    this.capacityAwareNodeSelectionEnabled = conf.getBoolean(
+        ScmConfigKeys.OZONE_SCM_CONTAINER_PLACEMENT_RACK_AWARE_CAPACITY_AWARE_ENABLED,
+        ScmConfigKeys.OZONE_SCM_CONTAINER_PLACEMENT_RACK_AWARE_CAPACITY_AWARE_ENABLED_DEFAULT);
   }
 
   /**
@@ -482,8 +490,8 @@ public final class SCMContainerPlacementRackAware
       int retries = MAX_RETRY;
       while (retries > 0) {
         metrics.incrDatanodeChooseAttemptCount();
-        DatanodeDetails node = (DatanodeDetails) networkTopology.chooseRandom(NetConstants.ROOT,
-            excludedNodesForCapacity, step.affinityNode == null ? usedNodes : null, step.affinityNode,
+        DatanodeDetails node = chooseRandomNode(excludedNodesForCapacity,
+            step.affinityNode == null ? usedNodes : null, step.affinityNode,
             step.ancestorGen);
         if (node == null) {
           LOG.warn("Failed to find the datanode for container. excludedNodes: {}, affinityNode: {}",
@@ -515,6 +523,37 @@ public final class SCMContainerPlacementRackAware
       throw new SCMException(errMsg, null);
     }
     throw new SCMException("No satisfied datanode to meet the excludedNodes and affinityNode constrains.", null);
+  }
+
+  /**
+   * Choose a random leaf node from the topology. When capacity-aware selection is enabled, two distinct random
+   * candidates are drawn and the one with lower space utilization is returned, so a nearly-full datanode (and the
+   * full rack it sits on) is not picked as often as an emptier peer. Falls back to a single random pick when a second
+   * distinct candidate or its metric is unavailable.
+   */
+  private DatanodeDetails chooseRandomNode(List<String> excludedScopes,
+      Collection<DatanodeDetails> usedNodes, DatanodeDetails affinityNode, int ancestorGen) {
+    DatanodeDetails first = (DatanodeDetails) networkTopology.chooseRandom(NetConstants.ROOT,
+        excludedScopes, usedNodes, affinityNode, ancestorGen);
+    if (!capacityAwareNodeSelectionEnabled || first == null) {
+      return first;
+    }
+    List<String> secondExcludedScopes = excludedScopes == null
+        ? new ArrayList<>() : new ArrayList<>(excludedScopes);
+    secondExcludedScopes.add(first.getNetworkFullPath());
+    Node second = networkTopology.chooseRandom(NetConstants.ROOT, secondExcludedScopes,
+        usedNodes, affinityNode, ancestorGen);
+    if (second == null) {
+      LOG.debug("Unable to select a second datanode for capacity-aware selection; keep the first pick {}", first);
+      return first;
+    }
+    SCMNodeMetric firstMetric = getNodeManager().getNodeStat(first);
+    SCMNodeMetric secondMetric = getNodeManager().getNodeStat((DatanodeDetails) second);
+    if (firstMetric == null || secondMetric == null) {
+      LOG.debug("Missing node metric for capacity-aware selection between {} and {}", first, second);
+      return first;
+    }
+    return firstMetric.isGreater(secondMetric.get()) ? (DatanodeDetails) second : first;
   }
 
   /** One place where chooseNode looks for a node. */

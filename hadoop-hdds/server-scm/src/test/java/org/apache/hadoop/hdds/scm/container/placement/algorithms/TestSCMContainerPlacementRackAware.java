@@ -22,6 +22,7 @@ import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.NodeOperationalSt
 import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.NodeOperationalState.IN_SERVICE;
 import static org.apache.hadoop.hdds.protocol.proto.HddsProtos.NodeState.HEALTHY;
 import static org.apache.hadoop.hdds.scm.ScmConfigKeys.OZONE_DATANODE_RATIS_VOLUME_FREE_SPACE_MIN;
+import static org.apache.hadoop.hdds.scm.ScmConfigKeys.OZONE_SCM_CONTAINER_PLACEMENT_RACK_AWARE_CAPACITY_AWARE_ENABLED;
 import static org.apache.hadoop.hdds.scm.net.NetConstants.LEAF_SCHEMA;
 import static org.apache.hadoop.hdds.scm.net.NetConstants.RACK_SCHEMA;
 import static org.apache.hadoop.hdds.scm.net.NetConstants.ROOT_SCHEMA;
@@ -39,6 +40,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.IntStream;
 import org.apache.commons.lang3.RandomUtils;
@@ -52,6 +54,7 @@ import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolPro
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.StorageReportProto;
 import org.apache.hadoop.hdds.scm.ContainerPlacementStatus;
 import org.apache.hadoop.hdds.scm.HddsTestUtils;
+import org.apache.hadoop.hdds.scm.container.placement.metrics.SCMNodeMetric;
 import org.apache.hadoop.hdds.scm.exceptions.SCMException;
 import org.apache.hadoop.hdds.scm.net.NetConstants;
 import org.apache.hadoop.hdds.scm.net.NetworkTopology;
@@ -1010,5 +1013,38 @@ public class TestSCMContainerPlacementRackAware {
     assertThrows(SCMException.class,
             () -> policy.chooseDatanodes(usedNodes, null, null, 1, 0, 0),
             "No target datanode, this call should fail");
+  }
+
+  @Test
+  public void capacityAwareSelectionPrefersLessUtilizedNode() throws SCMException {
+    setup(2);
+    conf.setBoolean(OZONE_SCM_CONTAINER_PLACEMENT_RACK_AWARE_CAPACITY_AWARE_ENABLED, true);
+    policy = new SCMContainerPlacementRackAware(
+        nodeManager, conf, cluster, true, metrics);
+    when(nodeManager.getNodeStat(datanodes.get(0)))
+        .thenReturn(new SCMNodeMetric(100L, 10L, 90L, 0L, 0L, 0L));
+    when(nodeManager.getNodeStat(datanodes.get(1)))
+        .thenReturn(new SCMNodeMetric(100L, 90L, 10L, 0L, 0L, 0L));
+
+    List<DatanodeDetails> chosen = policy.chooseDatanodes(
+        new ArrayList<>(), new ArrayList<>(), null, 1, 0, 0);
+
+    assertEquals(Collections.singletonList(datanodes.get(0)), chosen);
+  }
+
+  @Test
+  public void capacityAwareDisabledKeepsRandomSelectionUnchanged() throws SCMException {
+    setup(2);
+    when(nodeManager.getNodeStat(datanodes.get(0)))
+        .thenReturn(new SCMNodeMetric(100L, 10L, 90L, 0L, 0L, 0L));
+    when(nodeManager.getNodeStat(datanodes.get(1)))
+        .thenReturn(new SCMNodeMetric(100L, 90L, 10L, 0L, 0L, 0L));
+
+    for (int i = 0; i < 50; i++) {
+      List<DatanodeDetails> chosen = policy.chooseDatanodes(
+          new ArrayList<>(), new ArrayList<>(), null, 1, 0, 0);
+      assertEquals(1, chosen.size());
+      assertThat(chosen.get(0)).isIn(datanodes.get(0), datanodes.get(1));
+    }
   }
 }
